@@ -1,0 +1,303 @@
+#!/bin/sh
+# -*- scheme -*-
+exec guile $0 "$@"
+!#
+
+(add-to-load-path (getcwd))
+
+(use-modules (lang modelica parser))
+(use-modules (nyacc lang sx-util))
+(use-modules ((srfi srfi-1) #:select (fold fold-right append-reverse)))
+(use-modules (srfi srfi-37))
+(use-modules (ice-9 futures))
+(use-modules (ice-9 pretty-print))
+
+(define (sf fmt . args) (apply simple-format #t fmt args))
+(define (pp exp) (pretty-print exp #:per-line-prefix "  "))
+
+(define (fail fmt . args)
+  (apply simple-format (current-error-port)
+	 (string-append "nxmodelica: " fmt "\n")
+	 args)
+  (exit 1))
+
+(define (show-help)
+  (sf "usage: nxmodelica [-h] [-g model] file\n")
+  (sf "       -h --help    print help and exit\n")
+  (sf "       -g model     generate model\n")
+  (sf "       --gen=model  generate model\n")
+  (quit))
+
+(define options
+  (list (option '(#\h "help") #f #f
+		(lambda (opt name arg seed)
+		  (acons 'help #t seed)))
+	(option '(#\g "gen") #t #f
+		(lambda (opt name arg seed)
+		  (acons 'gen arg seed)))
+	))
+
+(define (parse-args args)
+  (args-fold args options
+	     (lambda (opt name arg seed)
+	       (fail "unrecognized option: ~S" name)
+	       (exit 1))
+	     (lambda (file seed)
+	       (if (string-suffix? file ".mo")
+		   (fail "expecting .mo file"))
+	       (acons 'files (cons file (assq-ref seed 'files)) seed))
+	     '((files))))
+
+(define (update-dict file dict)
+  (let ((tree (call-with-input-file file
+		(lambda (port) (read-mo-file port (current-module))))))
+    (unless tree (quit))
+    (fold
+     (lambda (defn dict)
+       (sx-match defn
+	 (((class connector type) (ident ,name) . ,_)
+	  (acons name defn dict))
+	 (else
+	  (sf "u missed\n") (pp defn)
+	  dict)))
+     dict (sx-tail tree))))
+
+;; =============================================================================
+
+;; proc is as usual
+;; seed is as usual
+;; pair is (value . future)
+;; here proc and (cdr pair) are evaluated in parallel
+;; NOT RIGHT, I THINK
+(define (par-fold-right proc seed pair)
+  (let loop ((pair pair))
+    (if (null? pair) seed
+	(proc (car pair) (loop (touch (cdr pair)))))))
+
+(define (fold-right/stk proc seed pair)
+  (let loop ((pair pair))
+    (sf "pair=~S\n" pair)
+    (if (null? pair) seed
+	(proc (car pair) (loop (cdr pair))))))
+
+(define (fold-values/f proc pair . seeds)
+  (if (null? pair)
+      (apply values seeds)
+      (call-with-values
+	  (lambda () (apply proc (car pair) seeds))
+	(lambda seeds
+	  (let* ((tail (cdr pair))
+		 (tail (if (future? tail) (touch tail) tail)))
+	    (apply fold-values/f proc tail seeds))))))
+
+;; =============================================================================
+
+;;; Notes:
+
+;; I think the best thing is to roll out all the identifiers which will have
+;; long names, and convert to index into table.  So (ident "R.X.I.Motor.xx")
+;; will end up as (id 1234)
+
+;; Make sx-match that uses futures.
+
+;;; Code:
+
+(use-modules (srfi srfi-11))
+(use-modules (sxml match))
+(use-modules (sxml fold))		; fold-values
+
+(define keepers '("Real" "Integer" "Boolean" "String"))
+
+;; pars : parameters
+;; elts : elements
+;; eqns : equations
+;; algs : algorithms
+
+;; in a comp-clause with comp-list, unroll the list
+;;   Object a, b, c;
+;; =>
+;;   Object a;
+;;   Object b;
+;;   Object c;
+(define (XXX-mo-unroll-comp-list cc seed)
+  (unless (eq? (sx-tag cc) 'component-clause)
+    (error "expecing component-clause"))
+  (let loop1 ((head (list (car cc))) (tail (cdr cc)))
+    (if (pair? (cdr tail))
+	(loop1 (cons (car tail) head) (cdr tail))
+	(fold-right
+	 (lambda (dtor seed)
+	   (cons (reverse (cons dtor head)) seed))
+	 seed tail))))
+
+;; @deffn {Procedure} sx-unitize list-tag form seed
+;; Given a declaration of form @code{(tag ... (elt-list ...) ...)}
+;; fold into the seed broken list of
+;; @code{(tag ... elt1 ...) (tag ... elt2 ...) ... seed}.
+;; Any attributes for the list form are lost.
+;; @end deffn
+(define (sx-unitize list-tag form seed)
+  (let loop ((head '()) (elts '()) (tail '()) (form form))
+    #;(sf "\nloop: head=~S\n  elts=~S\n  tail=~S\n  form=~S\n"
+    head elts tail form)
+    (if (null? elts)
+	(if (and (pair? (car form)) (eq? list-tag (sx-tag (car form))))
+	    (loop head (cdar form) (cdr form) '())
+	    (loop (cons (car form) head) elts tail (cdr form)))
+	(let loop2 ((elts elts))
+	  (if (null? elts) seed
+	      (cons (append-reverse (cons (car elts) head) tail)
+		    (loop2 (cdr elts))))))))
+
+;; break up element list into
+;;   (values parameters elements equations algorithms)
+;; expand a class to pars, elts, eqns, and algs
+(define* (mo-realize name dict)
+  (letrec
+      ((make-id
+	(lambda (prefix name)
+	  (if prefix `(ident ,name . ,(cdr prefix)) `(ident ,name))))
+
+       (realize
+	(lambda (prefix form args pars elts eqns algs)
+	  ;; args is options on form
+	  (sx-match form
+	    (((class model connector) (ident ,name)
+	      (composition
+	       (element-list . ,elts)
+	       (composition-list . ,cmps)))
+	     (call-with-values
+		 (lambda ()
+		   (breakup-elt-list prefix elts pars elts eqns algs))
+	       (lambda (pars elts eqns algs)
+		 (breakup-cmp-list prefix cmps pars elts eqns algs))))
+		 ;;(values pars elts eqns algs))))
+
+	    (((class model connector) (ident ,name)
+	      (composition
+	       (element-list . ,elts)))
+	     (breakup-elt-list prefix elts pars elts eqns algs))
+
+	    ((type (ident ,name) (type-spec (ident ,type)))
+	     (sf "1 hack: assume element ~S\n" name)
+	     (values pars (cons `(comp (type ,type) ,prefix) elts) eqns algs))
+
+	    (else
+	     (sf "1 missed:\n") (pp form)
+	     (values pars elts eqns algs)))))
+
+       (unitize
+	(lambda (form seed)
+	  (if (eq? 'component-clause (sx-tag form))
+	      (sx-unitize 'comp-list form seed)
+	      ;;(future (sx-unitize 'comp-list form seed))
+	      (cons form seed))))
+       
+       (breakup-elt-list
+	(lambda (prefix elt-list pars elts eqns algs)
+	  (define (mkid name) (make-id prefix name))
+	  (sf "\n elt-list:\n") (pp elt-list) (newline)
+	  (fold-values
+	   (lambda (elt pars elts eqns algs)
+	     (sx-match elt
+	       ((extends (ident ,parent))
+		(sf "p=~S\n" parent)
+		(let ((pval (assoc-ref dict parent)))
+		  (unless pval (pp dict) (error "not found"))
+		  (call-with-values
+		      (lambda ()
+			(realize prefix pval #f pars elts eqns algs))
+		    (lambda (pars elts eqns algs)
+		      ;;(sf "\nrealize=>\n") (pp elts)
+		      (values pars elts eqns algs)))))
+
+	       ((component-clause (type-spec (ident ,type))
+				  (decl (ident ,name) . ,rest))
+		(let ((typeform (assoc-ref dict type)))
+		  (unless (or typeform (member type keepers))
+		    (error "not found: ~S" type))
+		  (if (member type keepers)
+		      (values pars
+			      (cons `(comp (type ,type) (name ,name)) elts)
+			      eqns algs)
+		      (realize (mkid name) typeform  #f pars elts eqns algs))))
+
+	       ((component-clause (type-prefix "flow")
+				  (type-spec (ident ,type))
+				  (decl (ident ,name) . ,rest))
+		(let ((typeform (assoc-ref dict type)))
+		  (unless (or typeform (member type keepers))
+		    (error "not found: ~S" type))
+		  (if (member type keepers)
+		      (values pars
+			      (cons `(comp (type ,type) (name ,name)) elts)
+			      eqns algs)
+		      (realize (mkid name) typeform  #f pars elts eqns algs))))
+		
+	       ((component-clause (type-prefix "parameter")
+				  (type-spec (ident ,type))
+				  (decl (ident ,name) . ,rest))
+		(let ((typeform (assoc-ref dict type)))
+		  (unless (or typeform (member type keepers))
+		    (error "not found: ~S" type))
+		  (if (member type keepers)
+		      (values (cons `(comp (type ,type) (name ,name)) pars)
+			      elts eqns algs)
+		      (realize (mkid name) typeform #f pars elts eqns algs))))
+	       
+	       (else
+		(sf "2 missed:\n") (pp elt)
+		(values pars elts eqns algs))))
+	   
+	   (fold-right unitize '() elt-list)
+	   pars elts algs eqns)))
+       
+       (breakup-cmp-list
+	(lambda (prefix cmp-list pars elts eqns algs)
+	  (define (mkid name) (make-id prefix name))
+	  (sf "\n cmp-list:\n") (pp cmp-list) (newline)
+	  (fold-values
+	   (lambda (elt pars elts eqns algs)
+	     (sx-match elt
+	       ((eqn-section (connect (comp-ref ,a) (comp-ref ,b)))
+		(let ((xa 'xa) (xb 'xb))
+		  (values pars elts (cons `(conn ,xa ,xb) eqns) algs)))
+	       (else
+		(sf "3 missed:\n") (pp elt)
+		(values pars elts eqns algs))))
+	   cmp-list pars elts eqns algs)))
+
+       )
+    
+    (let ((form (assoc-ref dict name)))
+      (realize #f form #f '() '() '() '()))))
+
+
+;; =============================================================================
+
+(define (convert-nx-file . args)
+  (let* ((options (parse-args args))
+	 (files (assoc-ref options 'files))
+	 (dict (fold update-dict '() files)))
+    (if (assq-ref options 'help) (show-help))
+    ;;(sf "files=~S\n" files)
+    ;;(sf "dict:\n") (pp dict)
+    (and=> (assq-ref options 'gen)
+	   (lambda (name)
+	     (sf "converting ~S ...\n" name)
+	     (let ((form (assoc-ref dict name)))
+	       (call-with-values
+		   (lambda () (mo-realize name dict))
+		 (lambda (pars elts eqns algs)
+		   ;;(sf "pars=~S\n" pars)
+		   (sf "elts:\n") (pp elts)
+		   (sf "eqns:\n") (pp eqns)
+		   ;;(sf "pars=~S\n" pars)
+		   )))
+	     #f))
+    #f))
+
+(apply convert-nx-file (cdr (program-arguments)))
+
+;; ./nxmoelica -g SimpleCircuit ,x2.mo
+;; --- last line ---

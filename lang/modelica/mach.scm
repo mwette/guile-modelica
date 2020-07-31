@@ -1,6 +1,6 @@
-;;; nyacc/lang/modelica/mach.scm
+;;; lang/modelica/mach.scm
 
-;; Copyright (C) 2015-2018 Matthew R. Wette
+;; Copyright (C) 2015-2019 Matthew R. Wette
 ;;
 ;; This library is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU Lesser General Public
@@ -43,7 +43,7 @@
 
 ;;; Code:
 
-(define-module (nyacc lang modelica mach)
+(define-module (lang modelica mach)
   #:export (modelica-spec
 	    modelica-mach
 	    gen-modelica-files)

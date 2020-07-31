@@ -1,6 +1,6 @@
 ;;; Umach.scm - modelica dev
 
-;; Copyright (C) 2015,2017 Matthew R. Wette
+;; Copyright (C) 2015,2017,2019 Matthew R. Wette
 ;; 
 ;; Copying and distribution of this file, with or without modification,
 ;; are permitted in any medium without royalty provided the copyright
@@ -16,13 +16,15 @@
 
 ;;; Code:
 
-(use-modules (nyacc lang modelica mach))
+(add-to-load-path (getcwd))
+
+(use-modules (lang modelica mach))
 (use-modules (nyacc lalr))
 (use-modules (nyacc export))
 (use-modules (ice-9 pretty-print))
 
-(gen-modelica-files)
-(compile-file "parser.scm")
+(gen-modelica-files "lang/modelica")
+(compile-file "lang/modelica/parser.scm")
 
 (with-output-to-file ",file.txt"
   (lambda ()

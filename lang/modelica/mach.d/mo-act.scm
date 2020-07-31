@@ -1,4 +1,4 @@
-;; ./mach.d/mo-act.scm
+;; lang/modelica/mach.d/mo-act.scm
 
 ;; Copyright (c) 2015-2018 Matthew R. Wette
 ;; 

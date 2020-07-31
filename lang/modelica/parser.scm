@@ -1,6 +1,6 @@
 ;;; lang/modelica/parser.scm - NYACC Modelica parser
 
-;; Copyright (C) 2018 Matthew R. Wette
+;; Copyright (C) 2018-2019 Matthew R. Wette
 ;;
 ;; This library is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU Lesser General Public
@@ -21,7 +21,7 @@
 
 ;;; Code:
 
-(define-module (nyacc lang modelica parser)
+(define-module (lang modelica parser)
   #:export (parse-modelica read-mo-file)
   #:use-module (nyacc lex)
   #:use-module (nyacc parse)
@@ -33,12 +33,12 @@
 (define (pperr exp)
   (pretty-print exp (current-error-port) #:per-line-prefix "  "))
 
-(include-from-path "nyacc/lang/modelica/body.scm")
+(include-from-path "lang/modelica/body.scm")
 
 ;; === file parser ===================
 
-(include-from-path "nyacc/lang/modelica/mach.d/mo-tab.scm")
-(include-from-path "nyacc/lang/modelica/mach.d/mo-act.scm")
+(include-from-path "lang/modelica/mach.d/mo-tab.scm")
+(include-from-path "lang/modelica/mach.d/mo-act.scm")
 
 ;; does not support Q-ident (single quoted identifier)
 (define gen-mo-lexer
