@@ -1,6 +1,11 @@
-;;; Umach.scm - modelica dev
+#!/bin/sh
+# -*- scheme -*-
+# mach.gen - update parser tables
 
-;; Copyright (C) 2015,2017,2019 Matthew R. Wette
+exec guile $0
+!#
+
+;; Copyright (C) 2015,2017,2019,2020 Matthew R. Wette
 ;; 
 ;; Copying and distribution of this file, with or without modification,
 ;; are permitted in any medium without royalty provided the copyright
