@@ -33,7 +33,11 @@
 (define (pperr exp)
   (pretty-print exp (current-error-port) #:per-line-prefix "  "))
 
-(include-from-path "lang/modelica/body.scm")
+;; === file body ===================
+
+(define (check-ids st nd)
+  (if (not (string=? (cadr st) (cadr nd)))
+      (throw 'mo-error "end name does not match")))
 
 ;; === file parser ===================
 
